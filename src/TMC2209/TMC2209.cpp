@@ -588,7 +588,6 @@ int TMC2209::serialRead()
 {
   if (hardware_serial_ptr_ != nullptr && uart_is_readable_within_us(hardware_serial_ptr_, 3000))
   {
-
     return uart_getc(hardware_serial_ptr_);
   }
   return 0;
@@ -728,7 +727,7 @@ void TMC2209::sendDatagramBidirectional(Datagram & datagram,
   serialFlush();
 
   // clear the serial receive buffer if necessary
-  while (serialAvailable() > 0)
+  while (serialAvailable())
   {
     byte = serialRead();
   }
@@ -743,23 +742,11 @@ void TMC2209::sendDatagramBidirectional(Datagram & datagram,
   // Wait for the transmission of outgoing serial data to complete
   serialFlush();
 
-  // wait for bytes sent out on TX line to be echoed on RX line
-  uint32_t echo_delay = 0;
-  while ((serialAvailable() < datagram_size) and
-    (echo_delay < ECHO_DELAY_MAX_MICROSECONDS))
-  {
-    sleep_us(ECHO_DELAY_INC_MICROSECONDS);
-    echo_delay += ECHO_DELAY_INC_MICROSECONDS;
-  }
-
-  if (echo_delay >= ECHO_DELAY_MAX_MICROSECONDS)
-  {
-    return;
-  }
-
-  // clear RX buffer of echo bytes
+  // wait for bytes sent out on TX line to be echoed on RX line and clear it
   for (uint8_t i=0; i<datagram_size; ++i)
   {
+    if (not uart_is_readable_within_us(hardware_serial_ptr_, REPLY_DELAY_MAX_MICROSECONDS))
+      break;
     byte = serialRead();
   }
 }
@@ -792,15 +779,9 @@ uint32_t TMC2209::read(uint8_t register_address)
   sendDatagramBidirectional(read_request_datagram, READ_REQUEST_DATAGRAM_SIZE);
 
   uint32_t reply_delay = 0;
-  while ((serialAvailable() < WRITE_READ_REPLY_DATAGRAM_SIZE) and
-    (reply_delay < REPLY_DELAY_MAX_MICROSECONDS))
-  {
-    sleep_us(REPLY_DELAY_INC_MICROSECONDS);
-    reply_delay += REPLY_DELAY_INC_MICROSECONDS;
-  }
 
-  if (reply_delay >= REPLY_DELAY_MAX_MICROSECONDS)
-  {
+  // wait for some data (possibly partial)
+  if (not uart_is_readable_within_us(hardware_serial_ptr_, REPLY_DELAY_MAX_MICROSECONDS)) {
     return 0;
   }
 
@@ -810,6 +791,10 @@ uint32_t TMC2209::read(uint8_t register_address)
   read_reply_datagram.bytes = 0;
   for (uint8_t i=0; i<WRITE_READ_REPLY_DATAGRAM_SIZE; ++i)
   {
+    // as we couldn't guarantee data integrity, we need to check it now
+    if (not uart_is_readable_within_us(hardware_serial_ptr_, REPLY_DELAY_MAX_MICROSECONDS)) {
+      return 0;
+    }
     byte = serialRead();
     read_reply_datagram.bytes |= (byte << (byte_count++ * BITS_PER_BYTE));
   }
