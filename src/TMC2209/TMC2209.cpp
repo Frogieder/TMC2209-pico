@@ -51,7 +51,7 @@ void TMC2209::enable()
 {
   if (hardware_enable_pin_ >= 0)
   {
-    gpio_put(hardware_enable_pin_, 1);
+    gpio_put(hardware_enable_pin_, false);
   }
   chopper_config_.toff = toff_;
   writeStoredChopperConfig();
@@ -61,7 +61,7 @@ void TMC2209::disable()
 {
   if (hardware_enable_pin_ >= 0)
   {
-    gpio_put(hardware_enable_pin_, 1);
+    gpio_put(hardware_enable_pin_, true);
   }
   chopper_config_.toff = TOFF_DISABLE;
   writeStoredChopperConfig();
