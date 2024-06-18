@@ -4,105 +4,54 @@
 // Authors:
 // Peter Polidoro peter@polidoro.io
 // ----------------------------------------------------------------------------
-#include "TMC2209.h"
 
+//#include "TMC2209.hpp"
+#include "src/TMC2209.hpp"
 
 TMC2209::TMC2209()
 {
   hardware_serial_ptr_ = nullptr;
-#if SOFTWARE_SERIAL_INCLUDED
-  software_serial_ptr_ = nullptr;
-#endif
   serial_baud_rate_ = 115200;
   serial_address_ = SERIAL_ADDRESS_0;
   hardware_enable_pin_ = -1;
   cool_step_enabled_ = false;
 }
 
-#if defined(ESP32)
-void TMC2209::setup(HardwareSerial & serial,
+void TMC2209::setup(uart_inst_t * serial,
   long serial_baud_rate,
   SerialAddress serial_address,
-  int16_t alternate_rx_pin,
-  int16_t alternate_tx_pin)
+  int16_t rx_pin,
+  int16_t tx_pin)
 {
-  hardware_serial_ptr_ = &serial;
-  if ((alternate_rx_pin < 0) || (alternate_tx_pin < 0))
-  {
-    hardware_serial_ptr_->end();
-    hardware_serial_ptr_->begin(serial_baud_rate);
-  }
-  else
-  {
-    hardware_serial_ptr_->end();
-    hardware_serial_ptr_->begin(serial_baud_rate, SERIAL_8N1, alternate_rx_pin, alternate_tx_pin);
-  }
+  hardware_serial_ptr_ = serial;
+  uart_deinit(hardware_serial_ptr_);
+  uart_init(hardware_serial_ptr_, 2400);
+  gpio_set_function(rx_pin, GPIO_FUNC_UART);
+  gpio_set_function(tx_pin, GPIO_FUNC_UART);
+  uart_set_baudrate(hardware_serial_ptr_, serial_baud_rate);
+  uart_set_format(hardware_serial_ptr_, 8, 1, UART_PARITY_NONE);
+//  uart_set_fifo_enabled(hardware_serial_ptr_, false);
+  uart_set_fifo_enabled(hardware_serial_ptr_, true);
+
 
   initialize(serial_baud_rate, serial_address);
 }
-#elif defined(ARDUINO_ARCH_RP2040)
-void TMC2209::setup(SerialUART & serial,
-  long serial_baud_rate,
-  SerialAddress serial_address,
-  int16_t alternate_rx_pin,
-  int16_t alternate_tx_pin)
-{
-  hardware_serial_ptr_ = &serial;
-  if ((alternate_rx_pin < 0) || (alternate_tx_pin < 0))
-  {
-    hardware_serial_ptr_->end();
-    hardware_serial_ptr_->begin(serial_baud_rate);
-  }
-  else
-  {
-    hardware_serial_ptr_->end();
-    serial.setRX(alternate_rx_pin);
-    serial.setTX(alternate_tx_pin);
-    hardware_serial_ptr_->begin(serial_baud_rate);
-  }
-
-  initialize(serial_baud_rate, serial_address);
-}
-#else
-void TMC2209::setup(HardwareSerial & serial,
-  long serial_baud_rate,
-  SerialAddress serial_address)
-{
-  hardware_serial_ptr_ = &serial;
-  hardware_serial_ptr_->end();
-  hardware_serial_ptr_->begin(serial_baud_rate);
-
-  initialize(serial_baud_rate, serial_address);
-}
-#endif
-
-#if SOFTWARE_SERIAL_INCLUDED
-void TMC2209::setup(SoftwareSerial & serial,
-  long serial_baud_rate,
-  SerialAddress serial_address)
-{
-  software_serial_ptr_ = &serial;
-  software_serial_ptr_->end();
-  software_serial_ptr_->begin(serial_baud_rate);
-
-  initialize(serial_baud_rate, serial_address);
-}
-#endif
 
 // unidirectional methods
 
 void TMC2209::setHardwareEnablePin(uint8_t hardware_enable_pin)
 {
   hardware_enable_pin_ = hardware_enable_pin;
-  pinMode(hardware_enable_pin_, OUTPUT);
-  digitalWrite(hardware_enable_pin_, HIGH);
+  gpio_init(hardware_enable_pin_);
+  gpio_set_dir(hardware_enable_pin_, GPIO_OUT);
+  gpio_put(hardware_enable_pin_, true);
 }
 
 void TMC2209::enable()
 {
   if (hardware_enable_pin_ >= 0)
   {
-    digitalWrite(hardware_enable_pin_, LOW);
+    gpio_put(hardware_enable_pin_, 1);
   }
   chopper_config_.toff = toff_;
   writeStoredChopperConfig();
@@ -112,7 +61,7 @@ void TMC2209::disable()
 {
   if (hardware_enable_pin_ >= 0)
   {
-    digitalWrite(hardware_enable_pin_, HIGH);
+    gpio_put(hardware_enable_pin_, 1);
   }
   chopper_config_.toff = TOFF_DISABLE;
   writeStoredChopperConfig();
@@ -620,14 +569,8 @@ int TMC2209::serialAvailable()
 {
   if (hardware_serial_ptr_ != nullptr)
   {
-    return hardware_serial_ptr_->available();
+    return uart_is_readable(hardware_serial_ptr_);
   }
-#if SOFTWARE_SERIAL_INCLUDED
-  else if (software_serial_ptr_ != nullptr)
-  {
-    return software_serial_ptr_->available();
-  }
-#endif
   return 0;
 }
 
@@ -635,29 +578,19 @@ size_t TMC2209::serialWrite(uint8_t c)
 {
   if (hardware_serial_ptr_ != nullptr)
   {
-    return hardware_serial_ptr_->write(c);
+    uart_putc_raw(hardware_serial_ptr_, c);
+    return 1;
   }
-#if SOFTWARE_SERIAL_INCLUDED
-  else if (software_serial_ptr_ != nullptr)
-  {
-    return software_serial_ptr_->write(c);
-  }
-#endif
   return 0;
 }
 
 int TMC2209::serialRead()
 {
-  if (hardware_serial_ptr_ != nullptr)
+  if (hardware_serial_ptr_ != nullptr && uart_is_readable_within_us(hardware_serial_ptr_, 3000))
   {
-    return hardware_serial_ptr_->read();
+
+    return uart_getc(hardware_serial_ptr_);
   }
-#if SOFTWARE_SERIAL_INCLUDED
-  else if (software_serial_ptr_ != nullptr)
-  {
-    return software_serial_ptr_->read();
-  }
-#endif
   return 0;
 }
 
@@ -665,7 +598,7 @@ void TMC2209::serialFlush()
 {
   if (hardware_serial_ptr_ != nullptr)
   {
-    return hardware_serial_ptr_->flush();
+    return uart_tx_wait_blocking(hardware_serial_ptr_);
   }
 }
 
@@ -815,7 +748,7 @@ void TMC2209::sendDatagramBidirectional(Datagram & datagram,
   while ((serialAvailable() < datagram_size) and
     (echo_delay < ECHO_DELAY_MAX_MICROSECONDS))
   {
-    delayMicroseconds(ECHO_DELAY_INC_MICROSECONDS);
+    sleep_us(ECHO_DELAY_INC_MICROSECONDS);
     echo_delay += ECHO_DELAY_INC_MICROSECONDS;
   }
 
@@ -862,7 +795,7 @@ uint32_t TMC2209::read(uint8_t register_address)
   while ((serialAvailable() < WRITE_READ_REPLY_DATAGRAM_SIZE) and
     (reply_delay < REPLY_DELAY_MAX_MICROSECONDS))
   {
-    delayMicroseconds(REPLY_DELAY_INC_MICROSECONDS);
+    sleep_us(REPLY_DELAY_INC_MICROSECONDS);
     reply_delay += REPLY_DELAY_INC_MICROSECONDS;
   }
 
@@ -981,4 +914,9 @@ uint32_t TMC2209::readPwmConfigBytes()
 uint32_t TMC2209::constrain_(uint32_t value, uint32_t low, uint32_t high)
 {
   return ((value)<(low)?(low):((value)>(high)?(high):(value)));
+}
+
+long map(long x, long in_min, long in_max, long out_min, long out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
